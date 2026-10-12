@@ -310,14 +310,48 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
       }
 
       if (terakan_descriptor_type_has_sampler(descriptor_type)) {
+         /* From the specification of `VkDescriptorSetLayoutBinding`:
+          *
+          *     "updates to a `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` descriptor with immutable
+          *     samplers do not modify the samplers (the image views are updated, but the sampler
+          *     updates are ignored)"
+          *
+          * Port of upstream 4096f2e9c57: a copy spanning multiple bindings must
+          * not bulk-overwrite immutable samplers of the later bindings.
+          */
          assert(terakan_descriptor_type_has_sampler(dst_binding->descriptor_type));
-         memcpy(dst_set->descriptors + dst_set->layout->pool_first_sampler_offset_bytes +
-                   sizeof(struct terakan_descriptor_set_sampler) *
-                      (dst_binding->first_set_sampler + descriptor_copy->dstArrayElement),
-                src_set->descriptors + src_set->layout->pool_first_sampler_offset_bytes +
-                   sizeof(struct terakan_descriptor_set_sampler) *
-                      (src_binding->first_set_sampler + descriptor_copy->srcArrayElement),
-                sizeof(struct terakan_descriptor_set_sampler) * descriptor_copy->descriptorCount);
+         struct terakan_descriptor_set_sampler * dst_next_samplers =
+            (struct terakan_descriptor_set_sampler *)(dst_set->descriptors +
+                                                      dst_set->layout
+                                                         ->pool_first_sampler_offset_bytes) +
+            (dst_binding->first_set_sampler + descriptor_copy->dstArrayElement);
+         struct terakan_descriptor_set_sampler const * src_next_samplers =
+            (struct terakan_descriptor_set_sampler const *)(src_set->descriptors +
+                                                            src_set->layout
+                                                               ->pool_first_sampler_offset_bytes) +
+            (src_binding->first_set_sampler + descriptor_copy->srcArrayElement);
+         uint32_t samplers_to_update_remaining = descriptor_copy->descriptorCount;
+         for (size_t dst_sampler_binding_index = dst_binding_index;
+              samplers_to_update_remaining != 0 &&
+              likely(dst_sampler_binding_index < dst_set->layout->binding_count);
+              ++dst_sampler_binding_index) {
+            struct terakan_descriptor_set_layout_binding const * const dst_sampler_binding =
+               &dst_set->layout->bindings[dst_sampler_binding_index];
+            if (dst_sampler_binding->descriptor_count == 0) {
+               continue;
+            }
+            assert(terakan_descriptor_type_has_sampler(dst_sampler_binding->descriptor_type));
+            uint32_t const samplers_to_update_for_binding =
+               MIN2(dst_sampler_binding->descriptor_count, samplers_to_update_remaining);
+            if (dst_sampler_binding->first_immutable_sampler_or_dynamic_offset == UINT16_MAX) {
+               memcpy(dst_next_samplers, src_next_samplers,
+                      sizeof(struct terakan_descriptor_set_sampler) *
+                         samplers_to_update_for_binding);
+            }
+            dst_next_samplers += samplers_to_update_for_binding;
+            src_next_samplers += samplers_to_update_for_binding;
+            samplers_to_update_remaining -= samplers_to_update_for_binding;
+         }
       }
    }
 }

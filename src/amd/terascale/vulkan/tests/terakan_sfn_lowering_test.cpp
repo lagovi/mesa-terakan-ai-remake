@@ -534,9 +534,13 @@ test_singleton_subgroup_lowering()
       nir_exclusive_scan(&b, minimum, .reduction_op = nir_op_iadd);
    nir_def * const ballot = nir_ballot(&b, 4, 32, nir_uge_imm(&b, minimum, 1));
    nir_def * const ballot_count = nir_ballot_bit_count_reduce(&b, 32, ballot);
+   nir_def * const subgroup_id = nir_load_subgroup_id(&b);
+   nir_def * const num_subgroups = nir_load_num_subgroups(&b);
    nir_store_var(&b, nir_local_variable_create(
                         nir_shader_get_entrypoint(b.shader), glsl_uint_type(), "result"),
-                 nir_iadd(&b, nir_iadd(&b, minimum, exclusive), ballot_count), 1);
+                 nir_iadd(&b, nir_iadd(&b, nir_iadd(&b, minimum, exclusive), ballot_count),
+                          nir_iadd(&b, subgroup_id, num_subgroups)),
+                 1);
 
    CHECK(terakan_nir_lower_subgroups(b.shader));
 
@@ -551,6 +555,8 @@ test_singleton_subgroup_lowering()
             case nir_intrinsic_exclusive_scan:
             case nir_intrinsic_ballot:
             case nir_intrinsic_ballot_bit_count_reduce:
+            case nir_intrinsic_load_subgroup_id:
+            case nir_intrinsic_load_num_subgroups:
                CHECK(false);
             default:
                break;

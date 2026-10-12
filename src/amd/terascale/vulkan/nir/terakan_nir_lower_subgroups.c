@@ -9,12 +9,20 @@
 bool terakan_nir_lower_subgroups(nir_shader * shader);
 
 static bool
-terakan_nir_lower_subgroups_filter(nir_instr const * const instr, UNUSED void const * const cb_data)
+terakan_nir_lower_subgroups_filter(nir_instr const * const instr, void const * const cb_data)
 {
    if (instr->type != nir_instr_type_intrinsic)
       return false;
 
    switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+   case nir_intrinsic_load_subgroup_id:
+   case nir_intrinsic_load_num_subgroups: {
+      /* These need the workgroup size, which only exists (non-variable) for compute. */
+      nir_shader const * const shader = (nir_shader const *)cb_data;
+      if (shader->info.stage != MESA_SHADER_COMPUTE || shader->info.workgroup_size_variable)
+         return false;
+      return true;
+   }
    case nir_intrinsic_load_subgroup_size:
    case nir_intrinsic_load_subgroup_invocation:
    case nir_intrinsic_load_subgroup_eq_mask:
@@ -92,6 +100,27 @@ terakan_nir_lower_subgroups_impl(nir_builder * const b, nir_instr * const instr,
    switch (intrin->intrinsic) {
    case nir_intrinsic_load_subgroup_size:
       return nir_imm_int(b, 1);
+   case nir_intrinsic_load_subgroup_id: {
+      /* subgroupSize is 1, so every invocation forms its own subgroup, and the subgroup id
+       * is the linear local invocation index. (The scalar index sysval itself is not
+       * implemented by the backend, so compose it from the local invocation id vector.) */
+      uint16_t const * const workgroup_size = b->shader->info.workgroup_size;
+      nir_def * const local_id = nir_load_local_invocation_id(b);
+      nir_def * subgroup_id = nir_channel(b, local_id, 0);
+      subgroup_id = nir_iadd(
+         b, subgroup_id,
+         nir_imul_imm(b, nir_channel(b, local_id, 1), workgroup_size[0]));
+      subgroup_id = nir_iadd(
+         b, subgroup_id,
+         nir_imul_imm(b, nir_channel(b, local_id, 2),
+                      workgroup_size[0] * workgroup_size[1]));
+      return subgroup_id;
+   }
+   case nir_intrinsic_load_num_subgroups: {
+      /* subgroupSize is 1, so every invocation of the workgroup is its own subgroup. */
+      uint16_t const * const workgroup_size = b->shader->info.workgroup_size;
+      return nir_imm_int(b, workgroup_size[0] * workgroup_size[1] * workgroup_size[2]);
+   }
    case nir_intrinsic_load_subgroup_invocation:
    case nir_intrinsic_first_invocation:
       return nir_imm_int(b, 0);
@@ -149,5 +178,5 @@ bool
 terakan_nir_lower_subgroups(nir_shader * const shader)
 {
    return nir_shader_lower_instructions(shader, terakan_nir_lower_subgroups_filter,
-                                        terakan_nir_lower_subgroups_impl, NULL);
+                                        terakan_nir_lower_subgroups_impl, shader);
 }
